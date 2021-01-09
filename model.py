@@ -41,19 +41,18 @@ class BahdanauAttention(tf.keras.layers.Layer):
         context = tf.reduce_sum(context, axis=1)
         context = tf.expand_dims(context, axis=1)
         
-        return context
+        return context, alpha_weights
 
 
 class PointerGenerator(tf.keras.layers.Layer):
-    def __init__(self, context_units, h_units, decoder_input_units):
+    def __init__(self):
         super(PointerGenerator, self).__init__()
-        self.Wc = tf.Variable(tf.zeros([1, context_units]), tf.float32) ###########################################
-        self.Wh = tf.Variable(tf.zeros([1, h_units]), tf.float32)
-        self.Wdi = tf.Variable(tf.zeros([1, decoder_input_units]), tf.float32)
-        self.b = tf.Variable()
+        self.dense_sigmoid = tf.keras.layers.Dense(32, activation='sigmoid') #choice of units?
+
     def call(self, context, h, decoder_input):
         
-        p_gen = tf.math.sigmoid(self.Wc @ context + self.Wh @ h + self.Wdi @ decoder_input + b)
+        concat = tf.concat([tf.squeeze(context), h, decoder_input], axis=-1)
+        p_gen = self.dense_sigmoid(concat)
 
         return p_gen #soft switch for wheter to extract or abstract word
 
@@ -70,7 +69,7 @@ class Decoder(tf.keras.layers.Layer):
     def call(self, X, a, h, c):  
         X = self.embedding(X)
 
-        context = self.attention_module(a, h)
+        context, alpha_weights = self.attention_module(a, h)
         #print("context ", context.shape, X.shape)
         X = tf.concat([context, X], axis=-1)
 
@@ -78,7 +77,7 @@ class Decoder(tf.keras.layers.Layer):
 
         y_pred = self.dense_softmax(h)
 
-        return y_pred, h, c
+        return y_pred, context, alpha_weights, h, c,
 
 
 class TextSummarizer:
@@ -94,9 +93,27 @@ class TextSummarizer:
         self.encoder = Encoder(a_units, vocab_size, embedding_dim)
         self.decoder = Decoder(h_units, vocab_size, embedding_dim, Tx)
 
+        self.pointer_generator = PointerGenerator()
+        self.batch_indexes = [i for i in range(self.batch_size) for _ in range(self.Tx)] # used final dist function 
         self.loss_function = tf.keras.losses.SparseCategoricalCrossentropy() #CE = - tf.reduce_sum(y_true * log(y_pred))
         self.optimizer = tf.keras.optimizers.Adam()
 
+
+    @tf.function
+    def _compute_attention_dist(self, alpha_weights, X):
+        attention_dist = tf.zeros([self.batch_size, 1, self.vocab_size])
+        
+        word_indexes = tf.reshape(X, [-1]) #flattening
+        attention_dist[self.batch_indexes, :, word_indexes] += alpha_weights
+        
+        return attention_dist
+        
+        
+    @tf.function
+    def _compute_final_dist(self, p_gen, vocab_dist, attention_dist):
+        final_dist = p_gen * vocab_dist + (1 - p_gen) * attention_dist
+        return final_dist
+        
 
     @tf.function
     def train_step(self, X, y):
@@ -113,9 +130,13 @@ class TextSummarizer:
             
             for t in range(self.Ty): #decoder loop
                 #print("decoder input ", decoder_input.shape)
-                y_pred, h, c = self.decoder(decoder_input, a, h, c)
+                vocab_dist, context, alpha_weights, h, c = self.decoder(decoder_input, a, h, c) #attention_dist = alpha_weights
                 #y_pred = tf.expand_dims(y_pred, axis=1)
                 
+                p_gen = self.pointer_generator(context, h, tf.cast(decoder_input, dtype=tf.float32))
+                attention_dist = self._compute_attention_dist(alpha_weights, X)
+                y_pred = self._compute_final_dist(p_gen, vocab_dist, attention_dist)
+
                 y_true = y[:, t] 
                 y_true = tf.reshape(y_true, [-1, 1])
 
@@ -136,7 +157,7 @@ class TextSummarizer:
 
     def fit(self, epochs, train_batches, val_batches=None):
         print("starting training...")
-        total_train_batches = len(train_batches); total_val_batches = len(val_batches)
+        total_train_batches = len(train_batches); 
 
         for epoch in range(epochs): #training loop
             
@@ -151,6 +172,7 @@ class TextSummarizer:
                 print_status_bar(epoch, "tra", batch_i, total_train_batches, loss, t0)
                 
             if val_batches is not None: #validation
+                total_val_batches = len(val_batches)
                 print("\nvalidating...")
                 val_epoch_loss = self.evaluate(val_batches, self.batch_size)
             
@@ -200,6 +222,22 @@ class TextSummarizer:
 
     def plot_attention(self):
         pass
+    
+
+    def _preprocess(self, line, word_dict):
+        indexes = tf.map_fn(lambda word: word_dict[word], elems=line)
+        return indexes
+
+
+    def csv_reader_dataset(self, file_path, word_dict, repeat=1, n_reader=5, n_read_threads=None, shuffle_buffer_size=10000, n_parse_threads=5):
+        
+        dataset = tf.data.TextLineDataset(file_path).skip(1) #skipping the header row
+        dataset = dataset.shuffle(shuffle_buffer_size).repeat(repeat) 
+        dataset = dataset.map(self._preprocess, num_parallel_calls=n_parse_threads)
+
+        return dataset.batch(self.batch_size).prefetch(1)
+
+
 
     #print_stats():
 
