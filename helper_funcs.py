@@ -1,6 +1,9 @@
 import time
 import json_lines
 import csv
+import re
+import numpy as np
+
 def print_status_bar(epoch, stage, batch_i, total_batches, loss, t):
     
     bar_len = 24
@@ -17,67 +20,88 @@ def print_status_bar(epoch, stage, batch_i, total_batches, loss, t):
         [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tt:{(time.time() - t) // 60}min {(time.time() - t) % 60:.0f}s", end="")
 
 
-def json_lines_to_csv(columns, source_file, dest_file):
+def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_size, Tx, Ty):
+    "writes dataset in form X, y, oov_cnt, oov_dict"
+    def word_to_index(word):
+        if word not in word_dict:
+            return word_dict["<unk>"]
+        else: return word_dict[word]
+
+    with json_lines.open(source_file, 'r') as json_file, open(dest_file, 'w') as csv_file:
+        #writer = csv.DictWriter(csv_file, fieldnames=columns, extrasaction='ignore')
+        writer = csv.writer(csv_file)
+        
+        for line in json_file: #type(line) == dict
+            oov_cnt = 0
+            oov_vocab = {} #token index to word
+            
+            X_words = re.findall(r"[\w']+|[.,!?;]", line[columns[0]].lower())[:Tx]
+            y_words = re.findall(r"[\w']+|[.,!?;]", line[columns[1]].lower())[:Ty]
+
+            for i in range(Tx):
+                if i < len(X_words):
+                    index = word_to_index(X_words[i])
+                    if index == 3:
+                        if X_words[i] not in oov_vocab:
+                            oov_cnt += 1
+                            oov_vocab[X_words[i]] = vocab_size - 1 + oov_cnt
+                        X_words[i] = oov_vocab[X_words[i]]
+                    else:
+                        X_words[i] = index
+                else:
+                    X_words.append(word_dict["<pad>"])
+
+            for i in range(Ty):
+                if i < len(y_words):
+                    index = word_to_index(y_words[i])
+                    if index == 3 and y_words[i] in oov_vocab:
+                        y_words[i] = oov_vocab[y_words[i]]
+                    else:
+                        y_words[i] = index 
+                else:
+                    y_words.append(word_dict["<pad>"])
+
+            line = X_words + y_words + [oov_cnt]
+
+            for key, value in oov_vocab.items():
+                line.append(key)
+                line.append(value)
+            
+            writer.writerow(line)
+
+
+def read_csv_dataset(source_file, word_dict, vocab_size, Tx, Ty):
+    with open(source_file) as csv_file:
+        reader = csv.reader(csv_file)
+        dataset = []
+
+        for row in reader:
+            X = np.array(row[0:Tx]).astype(np.uint16)
+            y = np.array(row[Tx:Tx + Ty]).astype(np.uint16)
+            oov_cnt = int(row[Tx + Ty])
+
+            oov_dict = {}
+
+            for i in range(Tx + Ty + 1, len(row) - 1, 2):
+                
+                oov_dict[row[i + 1]] = row[i]
+
+            dataset.append((X, y, oov_cnt, oov_dict))
+
+        return dataset
+
+    
+def json_lines_to_csv_old(columns, source_file, dest_file):
     with json_lines.open(source_file, 'r') as json_file, open(dest_file, 'w') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
 
-        for line in json_file:
+        for line in json_file: #type(line) == dict
+            for column_name in columns:
+                line[column_name] = ' '.join(re.findall(r"[\w']+|[.,!?;]", line[column_name].lower()))
             writer.writerow(line)
+
+
             
 #unused functions
 
-def one_hot_lookup(seq): #converts one text
-    X = np.zeros((len(seq), VOCAB_SIZE))
-
-    for i, x in enumerate(seq):
-        X[i, x] = 1
-    return X
-
-def indexes_to_ohe(texts):
-    A = np.zeros((texts.shape[0], texts.shape[1], VOCAB_SIZE))
-
-    for i, text_indexes in enumerate(texts):
-        for j, index in enumerate(text_indexes):
-            A[i, j, index] = 1
-
-
-def text_to_indexes(s, max_len): #converts one text ot series of indexes from range 0 - vocab_size
-    s = s.lower()
-    words = re.findall(r"[\w]+", s)
-    encoded_words = []
-    i = 0
-
-    while i < max_len - 1: #one less because of pad token
-        if i < len(words):
-            word = words[i]
-            try: encoded_words.append(word_dict[word])
-            except: encoded_words.append(word_dict["<unk>"])
-        
-        else: encoded_words.append(word_dict["<pad>"])
-        i += 1
-
-    return encoded_words + [word_dict["<eos>"]]
-
-
-def dataset_to_indexes(texts, max_len): #calls text_to_indexes on eache datapoint and creates np array of shape examples x max_len
-    A = np.empty((len(texts), max_len))
-    A = A.astype('int32')
-    
-    for i, text in enumerate(texts):
-        A[i] = text_to_indexes(text, max_len)
-    return A
-
-
-def create_batches(x, y):
-    assert x.shape[0] == x.shape[0]
-    
-    batches = []
-    n_batches = x.shape[0] // BATCH_SIZE
-
-    for i in range(n_batches):
-        batch_x = x[i * BATCH_SIZE:(i + 1) * BATCH_SIZE]
-        batch_y = y[i * BATCH_SIZE:(i + 1) * BATCH_SIZE]
-        batches.append((batch_x, batch_y))
-    
-    return batches
