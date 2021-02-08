@@ -8,7 +8,7 @@ def print_status_bar(epoch, stage, batch_i, total_batches, loss, t):
     
     bar_len = 24
     width = total_batches // bar_len
-    batch_i += 1
+    #batch_i += 1
     percentage = batch_i / total_batches * 100
 
     progress_done = ">" * (batch_i // width)
@@ -17,7 +17,7 @@ def print_status_bar(epoch, stage, batch_i, total_batches, loss, t):
     print(f"\repoch: {epoch+1} \
         stage: {stage}\
         batch: {batch_i:03d}/{total_batches} \
-        [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tt:{(time.time() - t) // 60}min {(time.time() - t) % 60:.0f}s", end="")
+        [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tt+:{(time.time() - t) // 60:.0f}:{(time.time() - t) % 60:.0f}s", end="")
 
 
 def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_size, Tx, Ty):
@@ -44,7 +44,7 @@ def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_
                     if index == 3:
                         if X_words[i] not in oov_vocab:
                             oov_cnt += 1
-                            oov_vocab[X_words[i]] = vocab_size - 1 + oov_cnt
+                            oov_vocab[X_words[i]] = vocab_size + oov_cnt #discarded -1
                         X_words[i] = oov_vocab[X_words[i]]
                     else:
                         X_words[i] = index
