@@ -20,7 +20,7 @@ def print_status_bar(epoch, stage, batch_i, total_batches, loss, t):
         [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tt+:{(time.time() - t) // 60:.0f}:{(time.time() - t) % 60:.0f}s", end="")
 
 
-def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_size, Tx, Ty):
+def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_size, Tx, Ty, max_global_oov):
     "writes dataset in form X, y, oov_cnt, oov_dict"
     def word_to_index(word):
         if word not in word_dict:
@@ -42,10 +42,14 @@ def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_
                 if i < len(X_words):
                     index = word_to_index(X_words[i])
                     if index == 3:
-                        if X_words[i] not in oov_vocab:
+                        if X_words[i] not in oov_vocab and oov_cnt < max_global_oov:
                             oov_cnt += 1
                             oov_vocab[X_words[i]] = vocab_size + oov_cnt #discarded -1
-                        X_words[i] = oov_vocab[X_words[i]]
+                        
+                        if X_words[i] in oov_vocab:
+                            X_words[i] = oov_vocab[X_words[i]]
+
+                        else: X_words[i] = index
                     else:
                         X_words[i] = index
                 else:
