@@ -140,5 +140,22 @@ def create_batches(x, y):
 
         return dataset.batch(self.batch_size).prefetch(1)
 
+            
+            #alpha_weights *= X_padding_mask # applying mask
+            #alpha_weights_sum = tf.reduce_sum(alpha_weights, axis=1)
+            #alpha_weights /= alpha_weights_sum # renormalization
+
+
+    def _loss_function(self, labels, logits, y_true_lengths, use_masking=True):
+        labels = tf.cast(tf.squeeze(labels), tf.int32)
+        losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels)
+        
+        if use_masking:
+            print(losses.shape)
+            mask = tf.sequence_mask(y_true_lengths)
+            losses = tf.boolean_mask(losses, mask)
+
+        return tf.reduce_mean(losses)
+#with tf.device('/gpu:0'):
 
 """

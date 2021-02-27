@@ -4,7 +4,7 @@ import csv
 import re
 import numpy as np
 
-def print_status_bar(epoch, stage, batch_i, total_batches, loss, t):
+def print_status_bar(epoch, stage, batch_i, total_batches, loss, accuracy, top_k_accuracy, t):
     
     bar_len = 24
     width = total_batches // bar_len
@@ -17,8 +17,8 @@ def print_status_bar(epoch, stage, batch_i, total_batches, loss, t):
     print(f"\repoch: {epoch+1} \
         stage: {stage}\
         batch: {batch_i:03d}/{total_batches} \
-        [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tt+:{(time.time() - t) // 60:.0f}:{(time.time() - t) % 60:.0f}s", end="")
-
+        [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tacc: {accuracy:.3f}\ttopkacc: {top_k_accuracy:.3f}\tt+:{(time.time() - t) // 60:.0f}:{(time.time() - t) % 60:.0f}s", end="")
+        
 
 def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_size, Tx, Ty, max_global_oov):
     "writes dataset in form X, y, oov_cnt, oov_dict"
