@@ -158,4 +158,42 @@ def create_batches(x, y):
         return tf.reduce_mean(losses)
 #with tf.device('/gpu:0'):
 
+import numpy as np
+
+def read():
+    with open("vals.txt", "r") as vals:
+        vals = {'I' : [], 'U' : [], 'Rv' : [], 'Ra' : []}
+        flag = ""
+        for line in vals:
+            if line == 'I':
+                flag == 'I'
+            elif line == 'U':
+                flag == 'U'
+            elif line == 'Rv':
+                flag == 'Rv'
+            elif line == 'Ra':
+                flag == 'Ra'
+            else:
+                vals[flag].append(float(line))
+        return vals
+
+vals = read()
+
+Rxm = [U/I for U, I in zip(vals['U'], vals['I'])]
+
+Rxs = [U / (I - U / Rv) for U, I , Rv in zip(vals['U'], vals['I'], vals['Rv'])]
+Rxs = Rxs[0:5]
+vel_Rxs = [U/I - Ra for U, I , Ra in zip(vals['U'], vals['I'], vals['Ra'])]
+vel_Rxs = vel_Rxs[5:]
+Rxs = Rxs + vel_Rxs
+
+Rhr = [np.sqrt(Ra * Rv) for Ra, Rv in zip(vals['Ra'], vals['Rv'])]
+
+mal_dM = [-Rxs / (Rxs + Rv) * 100 for Rxs, Rv in zip(Rxs, vals['Rv'])]
+mal_dM = mal_dM[:5]
+vel_dM = [Ra/Rxs * 100 for Ra, Rxs in zip(vals['Ra'], Rxs)]
+vel_dm = vel_dM[5:]
+dM = mal_dM + vel_dM
+
+
 """

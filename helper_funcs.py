@@ -4,17 +4,16 @@ import csv
 import re
 import numpy as np
 
-def print_status_bar(epoch, stage, batch_i, total_batches, loss, accuracy, top_k_accuracy, t):
+def print_status_bar(epoch, epochs, stage, batch_i, total_batches, loss, accuracy, top_k_accuracy, t):
     
     bar_len = 24
-    width = total_batches // bar_len
+    width = total_batches // bar_len # how many batches for one progress tick
     #batch_i += 1
     percentage = batch_i / total_batches * 100
-
-    progress_done = ">" * (batch_i // width)
+    progress_done = ">" * (batch_i // width) 
     progress_to_go = "." * (bar_len - (batch_i // width))
     
-    print(f"\repoch: {epoch+1} \
+    print(f"\repoch: {epoch+1}/{epochs} \
         stage: {stage}\
         batch: {batch_i:03d}/{total_batches} \
         [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tacc: {accuracy:.3f}\ttopkacc: {top_k_accuracy:.3f}\tt+:{(time.time() - t) // 60:.0f}:{(time.time() - t) % 60:.0f}s", end="")
@@ -104,7 +103,6 @@ def json_lines_to_csv_old(columns, source_file, dest_file):
             for column_name in columns:
                 line[column_name] = ' '.join(re.findall(r"[\w']+|[.,!?;]", line[column_name].lower()))
             writer.writerow(line)
-
 
             
 #unused functions
