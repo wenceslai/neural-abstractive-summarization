@@ -26,6 +26,8 @@ def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_
             return word_dict["<unk>"]
         else: return word_dict[word]
 
+    #Ty -= 1 # one token reserved for <eos>
+
     with json_lines.open(source_file, 'r') as json_file, open(dest_file, 'w') as csv_file:
         #writer = csv.DictWriter(csv_file, fieldnames=columns, extrasaction='ignore')
         writer = csv.writer(csv_file)
@@ -54,6 +56,7 @@ def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_
                 else:
                     X_words.append(word_dict["<pad>"])
 
+            eos_added = False
             for i in range(Ty):
                 if i < len(y_words):
                     index = word_to_index(y_words[i])
@@ -61,8 +64,13 @@ def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_
                         y_words[i] = oov_vocab[y_words[i]]
                     else:
                         y_words[i] = index 
+                elif not eos_added:
+                    eos_added = True
+                    y_words.append(word_dict["<eos>"])
                 else:
                     y_words.append(word_dict["<pad>"])
+
+            #y_words.append(word_dict["<eos>"])
 
             line = X_words + y_words + [oov_cnt]
 
@@ -87,7 +95,7 @@ def read_csv_dataset(source_file, word_dict, vocab_size, Tx, Ty):
 
             for i in range(Tx + Ty + 1, len(row) - 1, 2):
                 
-                oov_dict[row[i + 1]] = row[i]
+                oov_dict[int(row[i + 1])] = row[i]
 
             dataset.append((X, y, oov_cnt, oov_dict))
 
