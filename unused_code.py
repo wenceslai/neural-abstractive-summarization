@@ -195,5 +195,112 @@ vel_dM = [Ra/Rxs * 100 for Ra, Rxs in zip(vals['Ra'], Rxs)]
 vel_dm = vel_dM[5:]
 dM = mal_dM + vel_dM
 
+  Bahdanau version
+    def call(self, X, a, h, c, coverage, max_oov, use_coverage):  
+        
+        X = self.embedding(X)
 
+        context, alpha_weights = self.attention_module(a, h, coverage, use_coverage)
+        
+        X = tf.concat([context, X], -1)
+
+        h, _, c = self.lstm(inputs=X, initial_state=[h, c])
+
+        y_pred = self.dense_softmax(h)
+
+        y_pred = tf.concat([y_pred, tf.zeros([self.batch_size, max_oov])], -1) #appending zeros accounting for oovs
+        
+        p_gen = self.pointer_generator(context, h, tf.cast(X, tf.float32)) # shape [batches, 1]
+
+        return y_pred, context, alpha_weights, h, c, p_gen
+    
+class Attention(tf.keras.layers.Layer):
+    def __init__(self, Tx):
+        super(Attention, self).__init__()
+        self.Tx = Tx
+
+        self.W = tf.keras.layers.Dense(1, activation=None, use_bias=False)
+        
+        self.repeat_vector = tf.keras.layers.RepeatVector(Tx) #can you specify later?
+
+        self.v = self.add_weight(shape=(self.Tx,), initializer='random_normal', trainable=True, name='v')
+        self.w = self.add_weight(shape=(self.Tx,), initializer='random_normal', trainable=True, name='w')
+        self.b = self.add_weight(shape=(1), initializer='zeros', trainable=True, name='b')
+
+    
+    def call(self, a, h, coverage, X_mask, use_coverage, use_masking=True):
+
+        h = self.repeat_vector(h) # to match a
+        ah_concat = tf.concat([a, h], -1) 
+        
+        if use_coverage:
+            weighted_coverage = self.w * coverage
+            weighted_coverage = tf.expand_dims(weighted_coverage, -1)
+
+            e = tf.nn.tanh(self.W(ah_concat) + weighted_coverage + self.b)
+
+        else: e = tf.nn.tanh(self.W(ah_concat) + self.b) # e = v * tanh(Wh * h + Ws * s + wc * c + b)
+
+        e = self.v * tf.squeeze(e)
+        e = tf.expand_dims(e, -1)
+        
+        alpha_weights = tf.nn.softmax(e, -1) # each alpha weight is a scalar
+        #print("A", alpha_weights.shape)
+        if use_masking:
+            
+            #print(X_mask.shape)
+            
+            #alpha_weights = tf.boolean_mask(tf.squeeze(alpha_weights), X_mask)
+            alpha_weights = tf.where(X_mask, alpha_weights, tf.zeros_like(alpha_weights))
+            
+            #print("ab", alpha_weights.shape)
+            
+            #alpha_weights *= mask # applying mask
+            alpha_weights_sum = tf.reduce_sum(alpha_weights, axis=1)
+            #print("sum", alpha_weights_sum.shape)
+            alpha_weights = tf.squeeze(alpha_weights)
+            
+            alpha_weights /= alpha_weights_sum # renormalization
+
+            alpha_weights = tf.expand_dims(alpha_weights, axis=-1)
+
+        #print("B", alpha_weights.shape)
+        #print("ashape", a.shape)
+        
+        context = alpha_weights * a
+        context = tf.reduce_sum(context, 1)
+        context = tf.expand_dims(context, 1) # shape=[batch_size, 1, 2 * a_units]
+        
+        return context, tf.squeeze(alpha_weights)
+ ahoj jak kkkllllLLasdlfjasldfkjjj       
+jkjkjlllllllllllllkkkkkkkkkkk
+#tf.debugging.check_numerics(tf.cast(X, tf.float16), "nan pred embeddingemPOZOR nan KAMO")
+
+
+    def save_model(self):
+        self.checkpoint.step.assign_add(1)
+        save_path = self.checkpoint_manager.save()
+        print(f"Saved checkpoint for epoch {int(self.checkpoint.step)}: filepath: {save_path}")
+
+
+    def load_model(self):
+        self.checkpoint.restore(self.checkpoint_manager.latest_checkpoint)
+        
+        if self.checkpoint_manager.latest_checkpoint:
+            print(f"Restored from {self.checkpoint_manager.latest_checkpoint}")
+        else:
+            print("Initializing from scratch.")
+
+        self.checkpoint_dir = "/checkpoints"
+        self.checkpoint_prefix = os.path.join(self.checkpoint_dir, "ckpt")
+        self.checkpoint = tf.train.Checkpoint(step=tf.Variable(1), encoder=self.encoder, decoder=self.decoder)
+        self.checkpoint_manager = tf.train.CheckpointManager(self.checkpoint, self.checkpoint_dir, max_to_keep=3)
+        
 """
+
+asdfaslkdjflasjklasdflkjalsjdfJJJLLLLJJJJJJJJJk     jkjljljlkKJKJKJ
+
+ijlkjůlkj¨
+
+
+jkljlasdfjlkajsdfiijjjkjlkjikjlkjlkjkjij

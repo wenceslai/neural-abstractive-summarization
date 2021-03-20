@@ -69,6 +69,9 @@ def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_
                     y_words.append(word_dict["<eos>"])
                 else:
                     y_words.append(word_dict["<pad>"])
+            
+            if not eos_added:
+                y_words[-1] = word_dict["<eos>"]
 
             #y_words.append(word_dict["<eos>"])
 

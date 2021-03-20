@@ -11,26 +11,26 @@ import os
 import pickle
 
 from helper_funcs import print_status_bar, read_csv_dataset
-#from submodels_defs import *
+from submodels_defs import *
 from rouge import tf_rouge_l
 
 class Encoder(tf.keras.Model):
     def __init__(self, units, vocab_size, embedding_dim):
         super(Encoder, self).__init__()
-        #self.bilstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(units, return_sequences=True))
-        
+   
         self.bilstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(units, return_sequences=True, return_state=True))
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
 
         self.reduce_h = tf.keras.layers.Dense(units, activation='relu')
         self.reduce_c = tf.keras.layers.Dense(units, activation='relu')
 
-    def call(self, X):
+    def call(self, X, X_mask):
         
         X = self.embedding(X) # input embedding [batch_size, embed_dim]
         
-        a, forward_h, forward_c, backward_h, backward_c = self.bilstm(X) # a is concat of a-> and a<- shape=[batch_size, Tx, 2 * a_units]
-        #print("asfsdafa", a[0, ])
+        a, forward_h, forward_c, backward_h, backward_c = self.bilstm(X, mask=X_mask) # a is concat of a-> and a<- shape=[batch_size, Tx, 2 * a_units]
+
+        #tf.print(tf.reduce_sum(a[:, -1]))
         h = tf.concat([forward_h, backward_h], axis=-1) # [batch_size, 2 * hidden_dim]
         c = tf.concat([forward_c, backward_c], axis=-1) 
 
@@ -38,6 +38,7 @@ class Encoder(tf.keras.Model):
         c_reduced = self.reduce_c(c)
         
         return a, h_reduced, c_reduced 
+
 
 class Attention(tf.keras.layers.Layer):
     def __init__(self, Tx, units):
@@ -48,73 +49,56 @@ class Attention(tf.keras.layers.Layer):
         self.Wh = tf.keras.layers.Dense(2 * units, use_bias=True)
         self.Wc = tf.keras.layers.Dense(2 * units, use_bias=False)
         self.v = tf.keras.layers.Dense(1, use_bias=False)
+        #self.repeat_vector = tf.keras.layers.RepeatVector(Tx) #can you specify later?
 
-        self.repeat_vector = tf.keras.layers.RepeatVector(Tx) #can you specify later?
-    
     
     def call(self, a, h, coverage, X_mask, use_coverage, use_masking=True):
-        
-        #h = self.repeat_vector(h)
-        #print(a.shape, h.shape, "asdf")
 
         encoder_features = self.Wa(a) # [batch_size, Tx, 2 * hidd_dim]
-        decoder_features = self.Wh(h) # [batch_size, Tx, 2 * hidd_dim]
-        #print(decoder_features.shape)
-        decoder_features = self.repeat_vector(decoder_features)
-        #print("featureshapes", encoder_features.shape, decoder_features.shape)
-        #print(decoder_features.shape)
+        
+        decoder_features = self.Wh(h) # [batch_size, 2 * hidd_dim]
+        decoder_features =  tf.expand_dims(decoder_features, axis=1) # adding time axis for broadcasting (alternative for repeat vector)
+        #decoder_featurNotice also that these zeros are going directly to the dense layer, which will also eliminate the gradients for a lot of the dense weights. This might overfit longer sequences though if they are few compared to shorter sequences. s = self.repeat_vector(decoder_features)     # [batch_size, 1, 2 * hidd_dim]
+        
         if use_coverage:
-            #print("ahoj")
-            coverage = tf.expand_dims(coverage, axis=-1) # ?????
-            #print(coverage.shape)
+            coverage = tf.expand_dims(coverage, axis=-1) # ???
             coverage_features = self.Wc(coverage)
-            
-            #print(coverage_features.shape, encoder_features.shape, decoder_features.shape)
+
             features = encoder_features + decoder_features + coverage_features
         else:
             features = encoder_features + decoder_features
         
-        e = self.v(tf.nn.tanh(features))
-        #print("eshape", e.shape)
-        alpha_weights = tf.nn.softmax(e, axis=1) # each alpha weight is a scalar [batch_size, Tx, 1]
-        #print("alphweights", alpha_weights.shape)
-        #print("A", alpha_weights.shape)
-        if use_masking:
-            alpha_weights = tf.where(X_mask, alpha_weights, tf.zeros_like(alpha_weights))
-
-            alpha_weights_sum = tf.reduce_sum(alpha_weights, axis=1)
-            #print("sum", alpha_weights_sum.shape)
-            alpha_weights = tf.squeeze(alpha_weights)
-            
-            alpha_weights /= alpha_weights_sum # renormalization
-
-            alpha_weights = tf.expand_dims(alpha_weights, axis=-1) # changing to 1
-
-        #print("B", alpha_weights.shape)
-        #print("ashape", a.shape)
+        e = self.v(tf.nn.tanh(features)) 
         
-        context = alpha_weights * a
-        #print("1", context.shape)
-        context = tf.reduce_sum(context, 1)
-        #print("2", context.shape)
-        context = tf.expand_dims(context, 1) # shape=[batch_size, 1, 2 * hidden_dim]
-        #print("3", context.shape)
+        alpha_weights = tf.nn.softmax(e, axis=1) # [batch_size, Tx, 1] each alpha weight is a scalar 
+       
+        if use_masking:
+            alpha_weights = tf.where(X_mask, alpha_weights, tf.zeros_like(alpha_weights)) # masking
+            alpha_weights_sum = tf.reduce_sum(alpha_weights, axis=1)
+            alpha_weights = tf.squeeze(alpha_weights)
+            alpha_weights /= alpha_weights_sum # renormalization
+            alpha_weights = tf.expand_dims(alpha_weights, axis=-1)
+
+        context = alpha_weights * a # [batch_size, Tx, 2 * hidden_dim]
+        context = tf.reduce_sum(context, 1) 
+        context = tf.expand_dims(context, 1) # [batch_size, 1, 2 * hidden_dim]
+       
         return context, tf.squeeze(alpha_weights)
         
 
 class PointerGenerator(tf.keras.layers.Layer):
     def __init__(self):
         super(PointerGenerator, self).__init__()
-        
         self.dense_sigmoid = tf.keras.layers.Dense(1, activation='sigmoid') # each p_gen is scalar
+
 
     def call(self, context, hidden_states, decoder_input):
         
         concat = tf.concat([tf.squeeze(context), hidden_states, tf.squeeze(decoder_input)], -1) # [batch_size, 3 * hidden_dim + embedding_dim]
-        #print("pre pgen concat", concat.shape)
+        
         p_gen = self.dense_sigmoid(concat) # equivalent to sig(w*h + w*s + w*X + b)
 
-        return p_gen # soft switch for wheter to extract or abstract word
+        return p_gen # soft switch for wheter to extract or abstract word in next timestep
 
 
 class Decoder(tf.keras.Model):
@@ -144,20 +128,14 @@ class Decoder(tf.keras.Model):
         # context [batch_size, 1, 2 * hidden_dim]
 
         X = self.embedding(X) # [batch_size, 1, embedding_dim]
-        #print("X, contshape", context.shape, X.shape)
+     
         X = tf.concat([context, X], -1) # [batch_size, 1, 2 * hidden_dim + embedding_dim]
-        #print("Xconcat", X.shape)
-
         X = self.W_merge(X) # [batch_size, 1, embedding_dim]
-        #print("Xmerge", X.shape) # [batch_size, 1, embedding_dim]
 
         #h, _, c = self.lstm(inputs=X, initial_state=[h, c]) # lstm returns seq, h, c - when return_sequences=False seq and h are equivalent
         _, h, c = self.lstm(inputs=X, initial_state=[h, c]) # ????
-        
-        #print("hidden states", h.shape, c.shape)
 
         hidden_states = tf.concat([h, c], axis=-1) # [batch_size, 2 * hidden_dim]
-        #print("hidden_states", hidden_states.shape)
    
         context, alpha_weights = self.attention_module(a, hidden_states, coverage, X_mask, use_coverage)
 
@@ -165,8 +143,6 @@ class Decoder(tf.keras.Model):
         p_gen = self.pointer_generator(context, hidden_states, tf.cast(X, tf.float32)) # shape [batches, 1]
 
         output = tf.concat([h, tf.squeeze(context)], -1)
-        #print("output concat shape", output.shape)
-
         output = self.output_linear_1(output)
         vocab_dist = self.output_linear_softmax_2(output)
         
@@ -174,7 +150,6 @@ class Decoder(tf.keras.Model):
 
 
 class TextSummarizer:
-
     def __init__(self, Tx, Ty, batch_size, vocab_size, embedding_dim, a_units, h_units, word_dict, index_dict, max_global_oov, path_saved_models="", pointer_extract=True):
         # hyperparameters
         self.Tx = Tx # length of input seq
@@ -204,16 +179,9 @@ class TextSummarizer:
         self.top_k_accuracy = tf.keras.metrics.SparseTopKCategoricalAccuracy(k=5)
         
         self.path_saved_models = path_saved_models
-        """
-        self.checkpoint_dir = "/checkpoints"
-        self.checkpoint_prefix = os.path.join(self.checkpoint_dir, "ckpt")
-        self.checkpoint = tf.train.Checkpoint(step=tf.Variable(1), encoder=self.encoder, decoder=self.decoder)
-        self.checkpoint_manager = tf.train.CheckpointManager(self.checkpoint, self.checkpoint_dir, max_to_keep=3)
-        """
-        #self.use_coverage = True
 
 
-    #@tf.function
+    @tf.function
     def _compute_attention_dist(self, alpha_weights, X_batch_indeces_ext, max_oov):
         #print(alpha_weights[0, :])
         attention_dist = tf.zeros([self.batch_size, self.vocab_size + max_oov], tf.float32) # adding zeros for oovs
@@ -224,13 +192,13 @@ class TextSummarizer:
         return attention_dist
         
         
-    #@tf.function
+    @tf.function
     def _compute_final_dist(self, p_gen, vocab_dist, attention_dist):
         
         return p_gen * vocab_dist + (1 - p_gen) * attention_dist
         
 
-    #@tf.function
+    @tf.function
     def _masked_average(self, values, mask):
         seq_lens = tf.reduce_sum(tf.cast(mask, tf.float32), axis=1) # getting length of each sequence in batch
         
@@ -256,12 +224,12 @@ class TextSummarizer:
         #h = tf.zeros([self.batch_size, self.h_units]) # hiden state # init by zeros
         #c = tf.zeros([self.batch_size, self.h_units]) # cell state     
         
-        X_mask = tf.expand_dims(tf.not_equal(tf.cast(X, tf.int32), 0), axis=-1)
-        y_mask = tf.not_equal(tf.cast(y, tf.int32), 0)
+        X_mask = tf.expand_dims(tf.not_equal(X, 0), axis=-1)
+        y_mask = tf.not_equal(y, 0)
 
         with tf.GradientTape() as tape:
              
-            a, h, c = self.encoder(X) # get activations + concatenated hidden states
+            a, h, c = self.encoder(X, tf.squeeze(X_mask)) # get activations + concatenated hidden states
             
             decoder_input = tf.expand_dims([1] * self.batch_size, 1) # creating <sos> token
 
@@ -277,15 +245,11 @@ class TextSummarizer:
 
                 attention_dist = self._compute_attention_dist(alpha_weights, X_batch_indeces_ext, max_oov) # adds alpha weights to zeros vec to create dist [batch_size, vocab_size + max_oov]
                 
-                
                 y_pred = self._compute_final_dist(p_gen, vocab_dist, attention_dist) #combines both
                 
-
                 # current time step ground truth
                 y_true = y[:, t] 
                 y_true = tf.reshape(y_true, [-1, 1])
-
-               
 
                 curr_step_losses = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
                 losses = tf.concat([losses, tf.expand_dims(curr_step_losses, axis=-1)], axis=1)
@@ -345,7 +309,7 @@ class TextSummarizer:
         for epoch in range(epochs):
            
             # shuffling val and train data after each before each epoch
-            random.shuffle(train_data)
+            #random.shuffle(train_data) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             if val_data is not None: random.shuffle(val_data) 
 
             t0 = time.time()
@@ -365,7 +329,7 @@ class TextSummarizer:
                 train_epoch_loss += loss # do i need average loss???
                 
                 print_status_bar(epoch, epochs, "train", batch_i, total_train_batches, loss, accuracy, top_k_accuracy, t0)
-            
+            """
             # ---- VALIDATION ----  
             if val_data is not None: #validation
                 val_epoch_loss = 0
@@ -382,7 +346,7 @@ class TextSummarizer:
                         self.history["val_acc"].append(accuracy.numpy())
 
                     print_status_bar(epoch, epochs, "val", batch_i, total_val_batches, loss, accuracy, top_k_accuracy, t0)
-
+            """
             # average loss over epoch
             train_epoch_loss /= total_train_batches
             val_epoch_loss /= total_val_batches
@@ -453,9 +417,9 @@ class TextSummarizer:
 
         return X_batch, X_batch_indeces_ext, y_batch_teacher_force, y_batch, max_oov, oov_vocabs       
 
+
     def evaluate(self, X, y, X_batch_indeces_ext, max_oov, use_coverage=False, compute_rouge=False, return_preds=False):
         
-        #loss = 0
         accuracy = 0
         top_k_accuracy = 0
 
@@ -466,55 +430,57 @@ class TextSummarizer:
         rouge = None
 
         coverage = tf.zeros([self.batch_size, self.Tx]) # coverage vector
-
-        h = tf.zeros([self.batch_size, self.h_units]) # hiden state
-        c = tf.zeros([self.batch_size, self.h_units]) # cell state     
+        context = tf.zeros([self.batch_size, 1, 2 * self.a_units])
         
         X_mask = tf.expand_dims(tf.not_equal(tf.cast(X, tf.int32), 0), axis=-1)
         y_mask = tf.not_equal(tf.cast(y, tf.int32), 0)
                
-        a = self.encoder(X) # get activations
+        a, h, c = self.encoder(X, tf.squeeze(X_mask)) # get activations
             
         decoder_input = tf.expand_dims([1] * self.batch_size, 1) # creating <sos> token
-
-        context, _ = self.decoder.attention_module(a, tf.concat([h, c], -1), coverage, X_mask, use_coverage=False) # initial getting initial value of context vec
-            
+      
         for t in range(self.Ty): #decoder loop, iter for each output word
-            #print("dec inpu:", decoder_input.shape)
-            vocab_dist, alpha_weights, context, h, c, p_gen = self.decoder(decoder_input, a, h, c, coverage, context, max_oov, X_mask, use_coverage) #attention_dist = alpha_weights
             
+            vocab_dist, alpha_weights, context, h, c, p_gen = self.decoder(decoder_input, a, h, c, coverage, context, max_oov, X_mask, use_coverage) #attention_dist = alpha_weights
             vocab_dist = tf.concat([vocab_dist, tf.zeros([self.batch_size, max_oov])], -1) #appending zeros accounting for oovs
+            
+            coverage += alpha_weights # which words were attended already
 
             attention_dist = self._compute_attention_dist(alpha_weights, X_batch_indeces_ext, max_oov) #computes dis across attention
                 
             y_pred = self._compute_final_dist(p_gen, vocab_dist, attention_dist) #combines both
                 
-            coverage += alpha_weights # which words were attended already
-                
             # current time step ground truth
             y_true = y[:, t] 
             y_true = tf.reshape(y_true, [-1, 1])
-                
+            
+            # loss
             curr_step_losses = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
             losses = tf.concat([losses, tf.expand_dims(curr_step_losses, axis=-1)], axis=1)
             
-            self.accuracy.update_state(y_true, y_pred)
-            accuracy += self.accuracy.result()
-                
-            self.top_k_accuracy.update_state(y_true, y_pred)
-            top_k_accuracy += self.top_k_accuracy.result()
-
+            # adding coverage loss
             if use_coverage: # adding coverage loss = lambda * sum(min(alpha, coverage))
                 curr_step_cov_loss = self.lmbda * tf.reduce_sum(tf.math.minimum(alpha_weights, coverage), [1])
                 cov_losses = tf.concat([cov_losses, tf.expand_dims(curr_step_cov_loss, axis=-1)], axis=1)
 
-            decoder_input = tf.argmax(y_pred, axis=1)
+            # acccuracy
+            self.accuracy.update_state(y_true, y_pred)
+            accuracy += self.accuracy.result()
+            self.accuracy.reset_states()
+
+            # top k accuracy - if correct label was in top k argmax
+            self.top_k_accuracy.update_state(y_true, y_pred)
+            top_k_accuracy += self.top_k_accuracy.result()
+            self.accuracy.reset_states()
             
-            if compute_rouge: preds = tf.concat([preds, tf.cast(tf.expand_dims(decoder_input, axis=-1), tf.float32)], axis=1)
-
-            decoder_input = [3 if index > self.vocab_size else index for index in decoder_input]
+            decoder_input = tf.argmax(y_pred, axis=1) # token with biggest predicted probability
+            
+            preds = tf.concat([preds, tf.cast(tf.expand_dims(decoder_input, axis=-1), tf.float32)], axis=1)
+            
+            # if predicted word is oov replacing with <unk> token
+            decoder_input = [3 if index > self.vocab_size else index for index in decoder_input] 
             decoder_input = tf.expand_dims(decoder_input, axis=-1)
-
+            
         loss = self._masked_average(losses[:, 1:], y_mask)
 
         if compute_rouge: rouge = tf_rouge_l(preds[:, 1:], y, 2)
@@ -523,10 +489,8 @@ class TextSummarizer:
             cov_loss = self._masked_average(cov_losses[:, 1:], y_mask)
             loss += cov_loss
 
-        #loss_avg = loss / self.batch_size # average batch loss for one batch
         accuracy_avg = accuracy / self.batch_size
         top_k_accuracy_avg = top_k_accuracy / self.batch_size
-
            
         return loss, accuracy_avg, top_k_accuracy_avg, rouge, preds[:, 1:]
 
@@ -542,7 +506,6 @@ class TextSummarizer:
             transcript += " "  
         return transcript
 
-    
     
     def beam_search(self, beam_width):
         pass    
@@ -563,29 +526,17 @@ class TextSummarizer:
         self.decoder.save_weights(os.path.join(self.path_saved_models, 'saved_models/decoder'), save_format='tf')
       
         if save_history:
-            with open('train_history.pickle', 'wb') as f:
+            with open(os.path.join(self.path_saved_models, 'train_history.pickle'), 'wb') as f:
                 pickle.dump(self.history, f, protocol=pickle.HIGHEST_PROTOCOL)
         print("model saved")
+
 
     def load_model(self):
         self.encoder.load_weights(os.path.join(self.path_saved_models, 'saved_models/encoder'))
         self.decoder.load_weights(os.path.join(self.path_saved_models, 'saved_models/decoder'))
         print("model loaded")
-    """
-    def save_model(self):
-        self.checkpoint.step.assign_add(1)
-        save_path = self.checkpoint_manager.save()
-        print(f"Saved checkpoint for epoch {int(self.checkpoint.step)}: filepath: {save_path}")
+    
 
-
-    def load_model(self):
-        self.checkpoint.restore(self.checkpoint_manager.latest_checkpoint)
-        
-        if self.checkpoint_manager.latest_checkpoint:
-            print(f"Restored from {self.checkpoint_manager.latest_checkpoint}")
-        else:
-            print("Initializing from scratch.")
-    """
 
 
     
