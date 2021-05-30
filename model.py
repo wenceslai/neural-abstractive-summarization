@@ -1,3 +1,4 @@
+from numpy.core.numeric import indices
 import tensorflow as tf
 
 physical_devices = tf.config.list_physical_devices('GPU') # usually just one
@@ -5,10 +6,12 @@ for physical_device in physical_devices:
     tf.config.experimental.set_memory_growth(physical_device, enable=True)
 
 import time
+from datetime import datetime
 import random
 import numpy as np
 import os
 import pickle
+from distutils.dir_util import copy_tree
 
 from helper_funcs import print_status_bar, read_csv_dataset
 from submodels_defs import *
@@ -150,7 +153,7 @@ class Decoder(tf.keras.Model):
 
 
 class TextSummarizer:
-    def __init__(self, Tx, Ty, batch_size, vocab_size, embedding_dim, a_units, h_units, word_dict, index_dict, max_global_oov, path_saved_models="", pointer_extract=True):
+    def __init__(self, Tx, Ty, batch_size, vocab_size, embedding_dim, a_units, h_units, word_dict, index_dict, max_global_oov, save_dir_path="", pointer_extract=True):
         # hyperparameters
         self.Tx = Tx # length of input seq
         self.Ty = Ty# length of output seq (inclucding <eos>)
@@ -178,7 +181,7 @@ class TextSummarizer:
         self.accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
         self.top_k_accuracy = tf.keras.metrics.SparseTopKCategoricalAccuracy(k=5)
         
-        self.path_saved_models = path_saved_models
+        self.save_dir_path = save_dir_path
 
 
     @tf.function
@@ -292,9 +295,14 @@ class TextSummarizer:
         return loss, accuracy_avg, top_k_accuracy_avg
     
 
-    def fit(self, epochs, train_data, val_data=None, lr=0.001, use_coverage=False, early_stopping=None, reduce_lr=None):
+    def fit(self, epochs, train_data, val_data=None, lr=0.001, use_coverage=False, early_stopping=None, reduce_lr=None, save_freq=None, restore=False):
         print("...")
         
+        if restore == False: # backup of saved weights if starting from scratch
+            timestamp = datetime.now()
+            timestamp = timestamp.strftime("%d_%m_%Y-%H:%M:%S")
+            copy_tree(os.path.join(self.save_dir_path, "saved_models"), os.path.join(self.save_dir_path, "saved_models_backup_" + timestamp))
+
         self.history = {}
         self.history["train_loss"] = []; self.history["train_acc"] = []
         if val_data is not None: self.history["val_loss"] = []; self.history["val_acc"] = []
@@ -303,37 +311,64 @@ class TextSummarizer:
         total_train_batches = len(train_data) // self.batch_size
         if val_data is not None: total_val_batches = len(val_data) // self.batch_size
 
+        train_indeces = list(range(len(train_data)))
+        val_indeces = list(range(len(val_data)))
+        
         self.optimizer.lr.assign(lr)
         print("inital learning rate: ", self.optimizer.lr.numpy())
         
-        for epoch in range(epochs):
-           
-            # shuffling val and train data after each before each epoch
-            #random.shuffle(train_data) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            if val_data is not None: random.shuffle(val_data) 
+        start_epoch = 0; start_batch_i = 0
 
+        if restore:
+            # one train step to "warm up the model" - otherwise raises error during opt.set_weights()
+            X_batch, X_batch_indeces_ext, y_batch_teacher_force, y_batch, max_oov, _ = self._get_batch(0, train_data)
+            self.train_step(X_batch, y_batch, y_batch_teacher_force, X_batch_indeces_ext,  max_oov, use_coverage)
+            
+            start_epoch, start_batch_i, train_indeces = self.load_model(return_train_metadata=True, load_optimizer=True)
+        
+        for epoch in range(start_epoch, epochs):
+           
+            if restore:
+                train_data = train_data[train_indeces]     
+                restore = False
+            else:
+                # shuffling val and train data after each before each epoch
+                random.shuffle(train_indeces)
+                train_data = train_data[train_indeces]
+
+            if val_data is not None:
+                    random.shuffle(val_indeces)
+                    val_data = val_data[val_indeces]    
+                
             t0 = time.time()
             
             # ---- TRAINING ---- 
             train_epoch_loss = 0
-            for batch_i in range(0, total_train_batches):
+            for batch_i in range(start_batch_i, total_train_batches):
                 
                 X_batch, X_batch_indeces_ext, y_batch_teacher_force, y_batch, max_oov, _ = self._get_batch(batch_i, train_data)
+                
                 #running one step of mini batch gradient descent
                 loss, accuracy, top_k_accuracy = self.train_step(X_batch, y_batch, y_batch_teacher_force, X_batch_indeces_ext,  max_oov, use_coverage)
-                
-                if batch_i % 10 == 0:
+    
+
+                if batch_i % 10 == 0: # saving train metrics
                     self.history["train_loss"].append(loss.numpy())
                     self.history["train_acc"].append(accuracy.numpy())
+
+                if save_freq is not None: # saving the model everty save_freq batches
+                    if (batch_i - start_batch_i) % save_freq == 0:
+                        self.save_model(save_train_metadata=True, epoch=epoch, batch_i=batch_i, train_indeces=train_indeces, save_optimizer=True)
 
                 train_epoch_loss += loss # do i need average loss???
                 
                 print_status_bar(epoch, epochs, "train", batch_i, total_train_batches, loss, accuracy, top_k_accuracy, t0)
-            """
+            
+            start_batch_i = 0 # on next iter the start batch will be 0 always
+            
             # ---- VALIDATION ----  
             if val_data is not None: #validation
                 val_epoch_loss = 0
-
                 for batch_i in range(0, total_val_batches):
 
                     X_batch, X_batch_indeces_ext, _, y_batch, max_oov, _ = self._get_batch(batch_i, val_data)
@@ -346,7 +381,7 @@ class TextSummarizer:
                         self.history["val_acc"].append(accuracy.numpy())
 
                     print_status_bar(epoch, epochs, "val", batch_i, total_val_batches, loss, accuracy, top_k_accuracy, t0)
-            """
+            
             # average loss over epoch
             train_epoch_loss /= total_train_batches
             val_epoch_loss /= total_val_batches
@@ -403,14 +438,16 @@ class TextSummarizer:
                 y_batch.append(y_ext)
                 oov_cnts.append(oov_cnt) 
                 oov_vocabs.append(oov_vocab)
-    
+
         #converting lists to array  - NEEEDED TO CONVert???     
         X_batch = np.array(X_batch, np.int32)
         X_batch_indeces_ext = np.array(X_batch_ext, np.int32).flatten()
         y_batch_teacher_force = np.array(y_batch_teacher_force, np.int32)
         y_batch = np.array(y_batch, np.int32)
-                
-        X_batch_indeces_ext = np.array([[i, j] for i, j in zip(self.batch_indeces, X_batch_indeces_ext)])
+        
+        X_batch_indeces_ext = np.array([[i, j] for i, j in zip(self.batch_indeces, X_batch_indeces_ext)], dtype=np.int32)
+        
+        #print(X_batch.shape, X_batch_indeces_ext.shape, y_batch_teacher_force.shape, y_batch.shape)
 
         #max_oov = max(oov_cnts) unbale to use because tf.function - different sized inputs trigger retracing - solution?
         max_oov = self.max_global_oov + 1
@@ -495,25 +532,158 @@ class TextSummarizer:
         return loss, accuracy_avg, top_k_accuracy_avg, rouge, preds[:, 1:]
 
 
-    def indeces_to_words(self, indeces, oov_vocab):
+    def indeces_to_words(self, indeces, oov_vocab, remove_paddings=False):
         transcript = ""
         for index in indeces:
             if index > self.vocab_size - 1:
                 transcript += oov_vocab[index]
+            elif remove_paddings and index == 0:
+                continue
             else:
                 transcript += self.index_dict[index]
 
             transcript += " "  
         return transcript
 
-    
-    def beam_search(self, beam_width):
-        pass    
-
 
     def plot_attention(self, alpha_weights):
         pass
+    
+    @tf.function
+    def beam_decode_batch(self, X, X_batch_indeces_ext, bw, batch_size, alpha=0.7):
+        
+        self.batch_size = batch_size
 
+        # initializing parameters
+        coverage = tf.zeros([self.batch_size, self.Tx]) # initial coverage vector
+        context = tf.zeros([self.batch_size, 1, 2 * self.a_units]) # inital context vector
+        
+        X_mask = tf.expand_dims(tf.not_equal(tf.cast(X, tf.int32), 0), axis=-1)
+        #prev_log_probs = tf.zeros([batch_size, bw])
+
+        batch_indeces = tf.constant([i for i in range(batch_size) for _ in range(bw)]) # for choosing data in bw * batch_size x -1 format
+
+        # encoder pass       
+        a, h, c = self.encoder(X, tf.squeeze(X_mask)) # get activations
+            
+        decoder_input = tf.expand_dims([1] * batch_size, 1)
+
+        # first decoder step to choose first bw candidates
+        y_pred, h, c, coverage, context = self._one_decode_step(decoder_input, a, h, c, coverage, context, self.max_global_oov, X_mask, True, X_batch_indeces_ext) # changing max oov?
+        
+        self.batch_size *= bw # computing all beams in pralell inside a batch
+
+        top_probs, top_words = tf.nn.top_k(y_pred, bw) # it does not matter whether first probs are logs
+        
+        prev_log_probs = tf.math.log(top_probs)
+
+        # INITIALIZATION OF PARAMS FOR SEARCH
+        # tensors to which next predicted words and their log probs will be stacked along last dim
+        top_word_seq = tf.reshape(top_words, [batch_size * bw, 1])
+        top_log_probs_seq = tf.reshape(prev_log_probs, [batch_size * bw, 1])
+
+        paddings = tf.constant([[0, 0], [0, 0], [0, self.Ty - (0 + 1)]]) # padding by zeros to be able to concat all variable length sentences
+        top_sentences = tf.pad(tf.expand_dims(top_words, axis=-1), paddings) # batch x bw x Ty later batch x all sentences x Ty
+        
+        top_sentences_log_probs = prev_log_probs # batch_size x number of saved sentences
+
+       
+
+        # at the begining same, will change with different input words
+        h = tf.repeat(h, bw, 0)
+        c = tf.repeat(c, bw, 0)
+        context = tf.repeat(context, bw, 0)
+        coverage = tf.repeat(coverage, bw, 0)
+        
+        # these are same each decode step but needs to be copied for beam
+        a = tf.repeat(a, bw, 0)
+        X_batch_indeces_ext = tf.repeat(X_batch_indeces_ext, bw, 0)
+        X_mask = tf.repeat(X_mask, bw, 0)
+
+        decoder_input = tf.reshape(top_words, [batch_size * bw, 1])
+
+        for t in range(1, self.Ty): #? -1?
+
+            y_pred, h, c, coverage, context = self._one_decode_step(decoder_input, a, h, c, coverage, context, self.max_global_oov, X_mask, True, X_batch_indeces_ext)
+
+            log_probs = tf.math.log(y_pred) # applying logartihm for numerical stability
+            
+            log_probs = tf.reshape(log_probs, [batch_size, bw, -1]) # batch x bw x vocab_size
+            
+            #end_token_mask = tf.cast(tf.not_equal(log_probs, 2), tf.int32) # we do not count
+            #log_probs *= end_token_mask
+            #print(prev_log_probs.shape)
+            #print(log_probs.shape)
+
+            prev_log_probs = tf.repeat(tf.expand_dims(prev_log_probs, axis=-1), self.vocab_size + self.max_global_oov, axis=-1) # batch x B x vocab_size to be able to add
+            log_probs += prev_log_probs # adding logprobs of best words from previous timestep
+
+            log_probs = tf.reshape(log_probs, [batch_size, bw * (self.vocab_size + self.max_global_oov)]) # batch x bw * vocabsize
+
+            top_log_probs, top_words = tf.nn.top_k(log_probs, bw) # output batch x bw
+            prev_log_probs = top_log_probs
+
+            top_words = top_words % self.vocab_size
+            
+            top_word_seq = tf.concat([top_word_seq, tf.reshape(top_words, [bw * batch_size, -1])], axis=-1) # transforming top_words into batch * bw x 1 to match top_word_seq shape
+            
+            # store top bw sentences and their probs at each timestep then boolean mask on sentences containing eos token # counting eos itself???
+            paddings = tf.constant([[0, 0], [0, 0], [0, self.Ty - (t + 1)]]) # padding by zeros to be able to concat all variable length sentences
+            top_word_seq_padded = tf.pad(tf.reshape(top_word_seq, [batch_size, bw, -1]), paddings)
+            top_sentences = tf.concat([top_sentences, top_word_seq_padded], axis=1)
+
+            #normalized_top_log_probs = 1 / (t + 1)**alpha * top_sentences #/????
+            normalized_top_log_probs = 1 / (t + 1)**alpha * top_log_probs #/????
+
+            top_sentences_log_probs = tf.concat([top_sentences_log_probs, top_log_probs], axis=-1)
+        
+            # maximizing CONDITIONAL PROBS - multiply by previous ones ???
+            top_hidstate_indices = top_words // self.vocab_size
+            
+            top_hidstate_indices = tf.reshape(top_hidstate_indices, [-1]) # flattening
+            #top_hidstate_indices = tf.stack([batch_indeces, top_hidstate_indices], axis=-1) # creating indicies with components (batch, top_hidd_state)
+            top_hidstate_indices += bw * batch_indeces
+
+    
+            #h = tf.reshape(h, [batch_size, bw, -1]) # getting them into shape to be able two choose along two dimensions batch x b
+            h = tf.gather(h, top_hidstate_indices) # out shape should be again batch * bw x hid
+            c = tf.gather(c, top_hidstate_indices)
+
+            top_word_seq = tf.gather(top_word_seq, top_hidstate_indices)
+
+            #choosing top logprobs for next round!!!!
+            top_log_probs = tf.gather_nd(top_log_probs, tf.stack([batch_indeces, top_hidstate_indices], axis=-1)) # indicies with components (batch, top_hidd_state)
+
+            decoder_input = tf.reshape(top_words, [batch_size * bw, 1])
+            
+        
+        # i am cutting the sequences after eos token after Ty steps, computtationally more expensive but i need full bw * batch_size example not to retrace and have other complications
+        # letting <EOS> stay???
+        eos_token_mask = tf.cast(tf.math.logical_not(tf.math.reduce_any((tf.equal(top_sentences, 2)), axis=-1)), tf.float32)
+
+        top_sentences_log_probs *= eos_token_mask
+
+        best_sentence_index = tf.math.argmax(top_sentences_log_probs, axis=-1)
+    
+        top_sentence = tf.gather_nd(top_sentences, tf.stack([[i for i in range(batch_size)], best_sentence_index], axis=-1))
+
+        return top_sentence
+
+
+
+    @tf.function        
+    def _one_decode_step(self, decoder_input, a, h, c, coverage, context, max_oov, X_mask, use_coverage, X_batch_indeces_ext):
+
+        vocab_dist, alpha_weights, context, h, c, p_gen = self.decoder(decoder_input, a, h, c, coverage, context, max_oov, X_mask, use_coverage) #attention_dist = alpha_weights
+        
+        vocab_dist = tf.concat([vocab_dist, tf.zeros([self.batch_size, max_oov])], -1) #appending zeros accounting for oovs
+        coverage += alpha_weights # which words were attended already
+        
+        attention_dist = self._compute_attention_dist(alpha_weights, X_batch_indeces_ext, max_oov) #computes dis across attention 
+        y_pred = self._compute_final_dist(p_gen, vocab_dist, attention_dist) #combines both
+
+        return y_pred, h, c, coverage, context
+    
 
     def _ext_to_unk(self, index):
         if index >= self.vocab_size: #############..greater tha equals??
@@ -521,19 +691,55 @@ class TextSummarizer:
         else: return index
 
 
-    def save_model(self, save_history=True):
-        self.encoder.save_weights(os.path.join(self.path_saved_models, 'saved_models/encoder'), save_format='tf')
-        self.decoder.save_weights(os.path.join(self.path_saved_models, 'saved_models/decoder'), save_format='tf')
+    def save_model(self, save_history=True, save_train_metadata=False, epoch=None, batch_i=None, train_indeces=None, save_optimizer=False):
+        self.encoder.save_weights(os.path.join(self.save_dir_path, 'saved_models/encoder'), save_format='tf')
+        self.decoder.save_weights(os.path.join(self.save_dir_path, 'saved_models/decoder'), save_format='tf')
       
         if save_history:
-            with open(os.path.join(self.path_saved_models, 'train_history.pickle'), 'wb') as f:
+            with open(os.path.join(self.save_dir_path, 'train_history.pickle'), 'wb') as f:
                 pickle.dump(self.history, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        if save_optimizer:
+            np.save(os.path.join(self.save_dir_path, 'saved_checkpoints/opt_weights.npy'), np.array(self.optimizer.get_weights(), dtype=np.object))
+
+        if save_train_metadata:
+            timestamp = datetime.now()
+            timestamp = timestamp.strftime("%d/%m/%Y %H:%M:%S")
+
+            train_metadata = {'timestamp' : timestamp, 'epoch' : epoch, 'batch_i' : batch_i, 'train_indeces' : train_indeces}
+
+            with open(os.path.join(self.save_dir_path, 'saved_checkpoints/train_metadata.pickle'), 'wb') as f:
+                pickle.dump(train_metadata, f, protocol=pickle.HIGHEST_PROTOCOL)
+            
+            return None
+
         print("model saved")
 
 
-    def load_model(self):
-        self.encoder.load_weights(os.path.join(self.path_saved_models, 'saved_models/encoder'))
-        self.decoder.load_weights(os.path.join(self.path_saved_models, 'saved_models/decoder'))
+    def load_model(self, return_train_metadata=False, load_optimizer=False):
+        
+        if load_optimizer:
+            
+            opt_weights = np.load(os.path.join(self.save_dir_path, 'saved_checkpoints/opt_weights.npy'), allow_pickle=True)
+            """
+            dummy_vars = self.encoder.trainable_weights + self.decoder.trainable_weights
+            zero_grads = [tf.zeros_like(w) for w in dummy_vars]
+            self.optimizer.apply_gradients(zip(zero_grads, dummy_vars))
+            """
+            self.optimizer.set_weights(opt_weights)
+            print("optimizer loaded")
+
+        self.encoder.load_weights(os.path.join(self.save_dir_path, 'saved_models/encoder'))
+        self.decoder.load_weights(os.path.join(self.save_dir_path, 'saved_models/decoder'))
+
+        if return_train_metadata:
+
+            with open(os.path.join(self.save_dir_path, 'saved_checkpoints/train_metadata.pickle'), 'rb') as f:
+                
+                train_metadata = pickle.load(f)
+                print("restoring checkpoint from:", train_metadata['timestamp'], "epoch:", train_metadata['epoch'], "batch_i: ", train_metadata['batch_i'])
+                return train_metadata['epoch'], train_metadata['batch_i'], train_metadata['train_indeces'] 
+
         print("model loaded")
     
 

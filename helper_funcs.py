@@ -102,7 +102,7 @@ def read_csv_dataset(source_file, word_dict, vocab_size, Tx, Ty):
 
             dataset.append((X, y, oov_cnt, oov_dict))
 
-        return dataset
+        return np.array(dataset, dtype=object)
 
     
 def json_lines_to_csv_old(columns, source_file, dest_file):
