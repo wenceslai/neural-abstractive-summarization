@@ -16,7 +16,7 @@ def print_status_bar(epoch, epochs, stage, batch_i, total_batches, loss, accurac
     print(f"\repoch: {epoch+1}/{epochs} \
         stage: {stage}\
         batch: {batch_i:03d}/{total_batches} \
-        [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tacc: {accuracy:.3f}\ttopkacc: {top_k_accuracy:.3f}\tt+:{(time.time() - t) // 60:.0f}:{(time.time() - t) % 60:.0f}s", end="")
+        [{progress_done}>{progress_to_go}] ({percentage:.1f}%)\tloss: {loss:.5f}\tt+:{(time.time() - t) // 60:.0f}:{(time.time() - t) % 60:.0f}s", end="")
         
 
 def json_lines_to_csv_dataset(columns, source_file, dest_file, word_dict, vocab_size, Tx, Ty, max_global_oov):
@@ -115,6 +115,48 @@ def json_lines_to_csv_old(columns, source_file, dest_file):
                 line[column_name] = ' '.join(re.findall(r"[\w']+|[.,!?;]", line[column_name].lower()))
             writer.writerow(line)
 
-            
+
+def fix_text(text):
+    if type(text) == str:
+        text = text.split()
+
+    fixed_text = ""
+
+    sentence_end_flag = False
+
+    sentence_enders = ['.', '!', '?']
+    other_punc = [',', ';']
+
+    for i, token in enumerate(text):
+        if i == 0:
+            fixed_text += token.capitalize()
+
+        elif token not in sentence_enders + other_punc:
+            if sentence_end_flag == False:
+                fixed_text += " " + token
+            else:
+                fixed_text += " " + token.capitalize()
+                sentence_end_flag = False
+
+        elif token in sentence_enders:
+            fixed_text += token
+            sentence_end_flag = True
+        
+        elif token in other_punc:
+            fixed_text += token
+    
+    return fixed_text
+
+
+
+
+        
+
+
+
+
+
+
+        
 #unused functions
 

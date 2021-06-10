@@ -298,9 +298,49 @@ jkjkjlllllllllllllkkkkkkkkkkk
         
 """
 
-asdfaslkdjflasjklasdflkjalsjdfJJJLLLLJJJJJJJJJk     jkjljljlkKJKJKJ
+"""
+        print()
+        #top_seq_c = tf.zeros([batch_size, bw, self.h_units]) 
+        #top_seq_h = tf.tile(tf.expand_dims(h, axis=1), [1, bw, 1])
+        #top_seq_h = tf.tile(tf.expand_dims(h, axis=0), [bw, 1, 1])
+        #top_seq_c = tf.tile(tf.expand_dims(h, axis=1), [1, bw, 1])
+        #top_seq_coverage = tf.tile(tf.expand_dims(coverage, axis=1), [1, bw, 1])
+        #top_seq_context = tf.tile(tf.expand_dims(context, axis=1), [1, bw, 1])
 
-ijlkjůlkj¨
+        top_h = tf.tile(tf.expand_dims(h, axis=0), [bw, 1, 1])
+        top_c = tf.tile(tf.expand_dims(h, axis=0), [bw, 1, 1])
+        top_coverage = tf.tile(tf.expand_dims(h, axis=0), [bw, 1, 1])
+        top_context = tf.tile(tf.expand_dims(h, axis=0), [bw, 1, 1])
 
+        all_predictions = tf.zeros([ba]) 
 
-jkljlasdfjlkajsdfiijjjkjlkjikjlkjlkjkjij
+        for t in self.Ty:
+            
+            probs_concat = tf.zeros([batch_size, 1]) # in the end shape [batch_size, vocab_size * bw]
+            
+            #for hyp_i in range(bw):
+            for hyp_i in active_hypothesis:
+
+                y_pred, h, c, coverage, context = _one_decode_step(asdlf, h[hyp_i, :, :], ...)
+
+                y_pred += top_probs[hyp_i]
+                
+                probs_concat = tf.concat([probs_concat, y_pred], axis=-1)
+
+            top_probs, top_words = tf.nn.top_k(probs_concat, bw)
+
+            hyp_i = top_words // self.vocab_size # to which hypothesis the index belongs
+
+            top_words = top_words % self.vocab_size
+
+            top_h = tf.gather(context_concat, hyp_i)
+            
+            
+            ... # other states
+
+            #save to tensorarray (must padd)
+
+    #terminate loop if len of active hyp = 0 
+            
+    # or just iterate over all timestaps ignoring the hypothesis sentences which have something after <eos> token 
+"""

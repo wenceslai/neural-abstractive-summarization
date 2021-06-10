@@ -15,7 +15,7 @@ from distutils.dir_util import copy_tree
 
 from helper_funcs import print_status_bar, read_csv_dataset
 from submodels_defs import *
-from rouge import tf_rouge_l
+from tfrouge import tf_rouge_l
 
 class Encoder(tf.keras.Model):
     def __init__(self, units, vocab_size, embedding_dim):
@@ -257,13 +257,13 @@ class TextSummarizer:
                 curr_step_losses = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
                 losses = tf.concat([losses, tf.expand_dims(curr_step_losses, axis=-1)], axis=1)
                 
-                self.accuracy.update_state(y_true, y_pred)
-                accuracy += self.accuracy.result()
-                self.accuracy.reset_states()
+                #self.accuracy.update_state(y_true, y_pred)
+                #accuracy += self.accuracy.result()
+                #self.accuracy.reset_states()
 
-                self.top_k_accuracy.update_state(y_true, y_pred)
-                top_k_accuracy += self.top_k_accuracy.result()
-                self.accuracy.reset_states()
+                #self.top_k_accuracy.update_state(y_true, y_pred)
+                #top_k_accuracy += self.top_k_accuracy.result()
+                #self.accuracy.reset_states()
                 
                 if use_coverage: # adding coverage loss = lambda * sum(min(alpha, coverage))
                     curr_step_cov_loss = self.lmbda * tf.reduce_sum(tf.math.minimum(alpha_weights, coverage), [1])
@@ -289,10 +289,10 @@ class TextSummarizer:
         
         self.optimizer.apply_gradients(zip(gradients, variables)) #gradient descent
 
-        accuracy_avg = accuracy / self.batch_size
-        top_k_accuracy_avg = top_k_accuracy / self.batch_size
+        #accuracy_avg = accuracy / self.batch_size
+        #top_k_accuracy_avg = top_k_accuracy / self.batch_size
 
-        return loss, accuracy_avg, top_k_accuracy_avg
+        return loss
     
 
     def fit(self, epochs, train_data, val_data=None, lr=0.001, use_coverage=False, early_stopping=None, reduce_lr=None, save_freq=None, restore=False):
@@ -304,8 +304,8 @@ class TextSummarizer:
             copy_tree(os.path.join(self.save_dir_path, "saved_models"), os.path.join(self.save_dir_path, "saved_models_backup_" + timestamp))
 
         self.history = {}
-        self.history["train_loss"] = []; self.history["train_acc"] = []
-        if val_data is not None: self.history["val_loss"] = []; self.history["val_acc"] = []
+        self.history["train_loss"] = []#; self.history["train_acc"] = []
+        if val_data is not None: self.history["val_loss"] = []#; self.history["val_acc"] = []
 
         #computing number of val and train batches
         total_train_batches = len(train_data) // self.batch_size
@@ -320,11 +320,12 @@ class TextSummarizer:
         start_epoch = 0; start_batch_i = 0
 
         if restore:
-            # one train step to "warm up the model" - otherwise raises error during opt.set_weights()
+            # one train step to "warm up the model" - otherwise raises error during opt.set_weights() this does not affect weights because reload the weights
             X_batch, X_batch_indeces_ext, y_batch_teacher_force, y_batch, max_oov, _ = self._get_batch(0, train_data)
             self.train_step(X_batch, y_batch, y_batch_teacher_force, X_batch_indeces_ext,  max_oov, use_coverage)
             
-            start_epoch, start_batch_i, train_indeces = self.load_model(return_train_metadata=True, load_optimizer=True)
+            start_epoch, start_batch_i, train_indeces, losses = self.load_model(return_train_metadata=True, load_optimizer=True)
+            self.history["train_loss"] = losses
         
         for epoch in range(start_epoch, epochs):
            
@@ -349,12 +350,11 @@ class TextSummarizer:
                 X_batch, X_batch_indeces_ext, y_batch_teacher_force, y_batch, max_oov, _ = self._get_batch(batch_i, train_data)
                 
                 #running one step of mini batch gradient descent
-                loss, accuracy, top_k_accuracy = self.train_step(X_batch, y_batch, y_batch_teacher_force, X_batch_indeces_ext,  max_oov, use_coverage)
+                loss = self.train_step(X_batch, y_batch, y_batch_teacher_force, X_batch_indeces_ext,  max_oov, use_coverage)
     
-
                 if batch_i % 10 == 0: # saving train metrics
                     self.history["train_loss"].append(loss.numpy())
-                    self.history["train_acc"].append(accuracy.numpy())
+                    #self.history["train_acc"].append(accuracy.numpy())
 
                 if save_freq is not None: # saving the model everty save_freq batches
                     if (batch_i - start_batch_i) % save_freq == 0:
@@ -362,7 +362,7 @@ class TextSummarizer:
 
                 train_epoch_loss += loss # do i need average loss???
                 
-                print_status_bar(epoch, epochs, "train", batch_i, total_train_batches, loss, accuracy, top_k_accuracy, t0)
+                print_status_bar(epoch, epochs, "train", batch_i, total_train_batches, loss, t0)
             
             start_batch_i = 0 # on next iter the start batch will be 0 always
             
@@ -373,14 +373,14 @@ class TextSummarizer:
 
                     X_batch, X_batch_indeces_ext, _, y_batch, max_oov, _ = self._get_batch(batch_i, val_data)
                                         
-                    loss, accuracy, top_k_accuracy, rouge, _ = self.evaluate(X_batch, y_batch, X_batch_indeces_ext, max_oov, use_coverage, compute_rouge=True if batch_i == total_val_batches - 1 else False)
+                    loss, rouge, _ = self.evaluate(X_batch, y_batch, X_batch_indeces_ext, max_oov, use_coverage, compute_rouge=True if batch_i == total_val_batches - 1 else False)
                     val_epoch_loss += loss
                     
                     if batch_i % 10 == 0:
                         self.history["val_loss"].append(loss.numpy())
-                        self.history["val_acc"].append(accuracy.numpy())
+                        #self.history["val_acc"].append(accuracy.numpy())
 
-                    print_status_bar(epoch, epochs, "val", batch_i, total_val_batches, loss, accuracy, top_k_accuracy, t0)
+                    print_status_bar(epoch, epochs, "val", batch_i, total_val_batches, loss, t0)
             
             # average loss over epoch
             train_epoch_loss /= total_train_batches
@@ -501,14 +501,14 @@ class TextSummarizer:
                 cov_losses = tf.concat([cov_losses, tf.expand_dims(curr_step_cov_loss, axis=-1)], axis=1)
 
             # acccuracy
-            self.accuracy.update_state(y_true, y_pred)
-            accuracy += self.accuracy.result()
-            self.accuracy.reset_states()
+            #self.accuracy.update_state(y_true, y_pred)
+            #accuracy += self.accuracy.result()
+            #self.accuracy.reset_states()
 
             # top k accuracy - if correct label was in top k argmax
-            self.top_k_accuracy.update_state(y_true, y_pred)
-            top_k_accuracy += self.top_k_accuracy.result()
-            self.accuracy.reset_states()
+            #self.top_k_accuracy.update_state(y_true, y_pred)
+            #top_k_accuracy += self.top_k_accuracy.result()
+            #self.accuracy.reset_states()
             
             decoder_input = tf.argmax(y_pred, axis=1) # token with biggest predicted probability
             
@@ -526,10 +526,10 @@ class TextSummarizer:
             cov_loss = self._masked_average(cov_losses[:, 1:], y_mask)
             loss += cov_loss
 
-        accuracy_avg = accuracy / self.batch_size
-        top_k_accuracy_avg = top_k_accuracy / self.batch_size
+        #accuracy_avg = accuracy / self.batch_size
+        #top_k_accuracy_avg = top_k_accuracy / self.batch_size
            
-        return loss, accuracy_avg, top_k_accuracy_avg, rouge, preds[:, 1:]
+        return loss, rouge, preds[:, 1:]
 
 
     def indeces_to_words(self, indeces, oov_vocab, remove_paddings=False):
@@ -588,7 +588,6 @@ class TextSummarizer:
         top_sentences_log_probs = prev_log_probs # batch_size x number of saved sentences
 
        
-
         # at the begining same, will change with different input words
         h = tf.repeat(h, bw, 0)
         c = tf.repeat(c, bw, 0)
@@ -635,7 +634,7 @@ class TextSummarizer:
             #normalized_top_log_probs = 1 / (t + 1)**alpha * top_sentences #/????
             normalized_top_log_probs = 1 / (t + 1)**alpha * top_log_probs #/????
 
-            top_sentences_log_probs = tf.concat([top_sentences_log_probs, top_log_probs], axis=-1)
+            top_sentences_log_probs = tf.concat([top_sentences_log_probs, normalized_top_log_probs], axis=-1)
         
             # maximizing CONDITIONAL PROBS - multiply by previous ones ???
             top_hidstate_indices = top_words // self.vocab_size
@@ -656,12 +655,14 @@ class TextSummarizer:
 
             decoder_input = tf.reshape(top_words, [batch_size * bw, 1])
             
-        
+        self.batch_size = batch_size # correcting batch size
+
         # i am cutting the sequences after eos token after Ty steps, computtationally more expensive but i need full bw * batch_size example not to retrace and have other complications
         # letting <EOS> stay???
-        eos_token_mask = tf.cast(tf.math.logical_not(tf.math.reduce_any((tf.equal(top_sentences, 2)), axis=-1)), tf.float32)
+        #eos_token_mask = tf.cast(tf.math.logical_not(tf.math.reduce_any((tf.equal(top_sentences, 2)), axis=-1)), tf.float32)
+        eos_token_mask = tf.cast(tf.math.reduce_any((tf.equal(top_sentences, 2)), axis=-1), tf.float32)
 
-        top_sentences_log_probs *= eos_token_mask
+        top_sentences_log_probs -= eos_token_mask * 999999
 
         best_sentence_index = tf.math.argmax(top_sentences_log_probs, axis=-1)
     
@@ -706,7 +707,7 @@ class TextSummarizer:
             timestamp = datetime.now()
             timestamp = timestamp.strftime("%d/%m/%Y %H:%M:%S")
 
-            train_metadata = {'timestamp' : timestamp, 'epoch' : epoch, 'batch_i' : batch_i, 'train_indeces' : train_indeces}
+            train_metadata = {'timestamp' : timestamp, 'epoch' : epoch, 'batch_i' : batch_i, 'train_indeces' : train_indeces, 'train_losses' : self.history["train_loss"]}
 
             with open(os.path.join(self.save_dir_path, 'saved_checkpoints/train_metadata.pickle'), 'wb') as f:
                 pickle.dump(train_metadata, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -738,7 +739,7 @@ class TextSummarizer:
                 
                 train_metadata = pickle.load(f)
                 print("restoring checkpoint from:", train_metadata['timestamp'], "epoch:", train_metadata['epoch'], "batch_i: ", train_metadata['batch_i'])
-                return train_metadata['epoch'], train_metadata['batch_i'], train_metadata['train_indeces'] 
+                return train_metadata['epoch'], train_metadata['batch_i'], train_metadata['train_indeces'], train_metadata["train_losses"]
 
         print("model loaded")
     
