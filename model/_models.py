@@ -16,7 +16,6 @@ class Encoder(tf.keras.Model):
         
         a, forward_h, forward_c, backward_h, backward_c = self.bilstm(X, mask=X_mask) # a is concat of a-> and a<- shape=[batch_size, Tx, 2 * a_units]
 
-        #tf.print(tf.reduce_sum(a[:, -1]))
         h = tf.concat([forward_h, backward_h], axis=-1) # [batch_size, 2 * hidden_dim]
         c = tf.concat([forward_c, backward_c], axis=-1) 
 
@@ -61,7 +60,7 @@ class Attention(tf.keras.layers.Layer):
         if use_masking:
             alpha_weights = tf.where(X_mask, alpha_weights, tf.zeros_like(alpha_weights)) # masking
             alpha_weights_sum = tf.reduce_sum(alpha_weights, axis=1)
-            alpha_weights = tf.squeeze(alpha_weights)
+            alpha_weights = tf.squeeze(alpha_weights, axis=-1)
             alpha_weights /= alpha_weights_sum # renormalization
             alpha_weights = tf.expand_dims(alpha_weights, axis=-1)
 
@@ -80,7 +79,7 @@ class PointerGenerator(tf.keras.layers.Layer):
 
     def call(self, context, hidden_states, decoder_input):
         
-        concat = tf.concat([tf.squeeze(context), hidden_states, tf.squeeze(decoder_input)], -1) # [batch_size, 3 * hidden_dim + embedding_dim]
+        concat = tf.concat([tf.squeeze(context, axis=1), hidden_states, tf.squeeze(decoder_input, axis=1)], -1) # [batch_size, 3 * hidden_dim + embedding_dim] # SQUEEZE MODIF
         
         p_gen = self.dense_sigmoid(concat) # equivalent to sig(w*h + w*s + w*X + b)
 
@@ -110,9 +109,9 @@ class Decoder(tf.keras.Model):
         self.W_merge = tf.keras.layers.Dense(embedding_dim, activation=None)
     
   
-    def call(self, X, a, h, c, coverage, context, max_oov, X_mask, use_coverage):
+    def call(self, X, a, h, c, coverage, context, max_oov, X_mask, use_coverage, use_pgen):
         # context [batch_size, 1, 2 * hidden_dim]
-
+        
         X = self.embedding(X) # [batch_size, 1, embedding_dim]
      
         X = tf.concat([context, X], -1) # [batch_size, 1, 2 * hidden_dim + embedding_dim]
@@ -126,9 +125,10 @@ class Decoder(tf.keras.Model):
         context, alpha_weights = self.attention_module(a, hidden_states, coverage, X_mask, use_coverage)
 
         # github implementation uses c in addtion to h as input to p gen layer why?
-        p_gen = self.pointer_generator(context, hidden_states, tf.cast(X, tf.float32)) # shape [batches, 1]
+        if use_pgen: p_gen = self.pointer_generator(context, hidden_states, tf.cast(X, tf.float32)) # shape [batches, 1]
+        else: p_gen = None
 
-        output = tf.concat([h, tf.squeeze(context)], -1)
+        output = tf.concat([h, tf.squeeze(context, axis=1)], -1)
         output = self.output_linear_1(output)
         vocab_dist = self.output_linear_softmax_2(output)
         

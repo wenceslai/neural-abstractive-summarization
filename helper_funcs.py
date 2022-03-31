@@ -47,7 +47,7 @@ def create_merge_pieces(text, max_len, sp):
     ids = sp.PieceToId(total_pieces)
     return total_pieces, ids
 
-
+"""
 def json_lines_to_csv_dataset_sentencepiece(columns, source_file, dest_file, vocab_size, Tx, Ty, max_global_oov, max_pieces=None, max_Tx=1e5, max_Ty=1e5):
     #max_subwords = 
     import sentencepiece as spm
@@ -71,6 +71,91 @@ def json_lines_to_csv_dataset_sentencepiece(columns, source_file, dest_file, voc
             y_pieces = sp.EncodeAsPieces(y_sent)
 
             if len(X_pieces > max_Tx) or len(y_pieces) > max_Ty: continue
+
+            X_ids = sp.EncodeAsIds(X_sent)[:Tx]
+            y_ids = sp.EncodeAsIds(y_sent)[:Ty]
+            #print(X_pieces, X_ids, sp.Decode(X_ids), "\n\n\n")
+            #print(len(X_sent), len(X_pieces), len(X_ids))
+            oov_cnt = 0
+            oov_vocab = {}
+            
+            eos_added = False
+            X_len = len(X_ids)
+            for i in range(Tx): # -1 for eos token
+                if i < X_len:
+                    if X_ids[i] == sp.unk_id():
+                        if X_pieces[i] not in oov_vocab and oov_cnt < max_global_oov:
+                            oov_cnt += 1
+                            oov_vocab[X_pieces[i]] = vocab_size + oov_cnt
+
+                        if X_pieces[i] in oov_vocab:
+                            X_ids[i] = oov_vocab[X_pieces[i]]
+                        
+                        else:
+                            X_ids[i] = sp.unk_id()
+                
+                elif not eos_added:
+                    X_ids.append(sp.eos_id())
+                    eos_added = True
+
+                else:
+                    X_ids.append(sp.pad_id())
+            
+            if not eos_added:
+                X_ids[-1] = sp.eos_id()
+
+            eos_added = False
+            y_len = len(y_ids)
+
+            for i in range(Ty):
+                if i < y_len:
+                    if y_ids[i] == sp.unk_id():
+                        if y_pieces[i] in oov_vocab:
+                            y_ids[i] = oov_vocab[y_pieces[i]]
+                        
+                        else: y_ids[i] = sp.unk_id()
+                
+                elif not eos_added:
+                    y_ids.append(sp.eos_id())
+                    eos_added = True
+
+                else:
+                    y_ids.append(sp.pad_id())
+            
+            if not eos_added:
+                y_ids[-1] = sp.eos_id()
+
+
+            line = X_ids + y_ids + [oov_cnt]
+
+            for key, value in oov_vocab.items():
+                line.append(key)
+                line.append(value)
+            
+            writer.writerow(line)
+"""
+
+def json_lines_to_csv_dataset_sentencepiece(columns, source_file, dest_file, vocab_size, Tx, Ty, max_global_oov):
+    #max_subwords = 
+    import sentencepiece as spm
+    sp = spm.SentencePieceProcessor(model_file='sp_czechsum_50K_model.model') # either 30K or 50K vocab
+
+    with json_lines.open(source_file, 'r') as json_file, open(dest_file, 'w') as csv_file:
+
+        writer = csv.writer(csv_file)
+
+        for line in json_file:
+            X_sent = line[columns[0]].lower()
+            y_sent = line[columns[1]].lower()
+            
+            #r = "[#;|\'@#$\^*():\[\]\{\}]"
+            r = r"[^\w.,!?;\" ]"
+
+            X_sent = re.sub(r, "", X_sent)
+            y_sent = re.sub(r, "", y_sent)
+
+            X_pieces = sp.EncodeAsPieces(X_sent)
+            y_pieces = sp.EncodeAsPieces(y_sent)
 
             X_ids = sp.EncodeAsIds(X_sent)[:Tx]
             y_ids = sp.EncodeAsIds(y_sent)[:Ty]
